@@ -1,5 +1,6 @@
-# 运行环境（实测版本）
-# Python 3.13.9
+# 直接依赖（版本区间，非全量锁定）
+# 实测：Windows x64 + Python 3.13.9（独立干净 venv 安装并跑通、结果比对一致）
+# 其他 Python 版本未验证，不作为支持声明
 pandapower>=3.5,<4
 pandas>=2.2,<3
 matplotlib>=3.8,<4

@@ -17,7 +17,9 @@
 ```
 energy-systems-portfolio/
 ├── README.md                    # 项目导航（本文件）
-├── requirements.txt             # 运行依赖
+├── requirements.txt             # 运行依赖（版本区间）
+├── tools/
+│   └── verify_cleanenv.py       # 干净环境结果比对（只读，不写正式数据）
 ├── docs/
 │   ├── README.md                # 文档索引
 │   └── technical-report-standard.md   # 技术报告写作规范
@@ -43,6 +45,12 @@ python projects\01-ieee9-loadflow-n1\src\make_figures.py   # 图表
 
 结果写入对应项目的 `data/` 与 `figures/`，相对路径，无机器相关配置。
 
+在另一个（干净）虚拟环境中重跑后，可只读比对是否复现一致，退出码 0 表示通过：
+
+```powershell
+python tools\verify_cleanenv.py --clean-dir <干净环境中的项目副本目录>
+```
+
 ## 文档约定
 
 - 技术报告只写研究问题、方法、结果、分析、结论、局限与复现方式；
@@ -53,5 +61,5 @@ python projects\01-ieee9-loadflow-n1\src\make_figures.py   # 图表
 
 ## 环境
 
-- Python 3.10+（实测 3.13.9）
+- Python 3.13.9（当前唯一验证版本；3.10–3.12 未验证）
 - pandapower 3.5.6、pandas 2.3.3、matplotlib 3.11.2（见 `requirements.txt`）
