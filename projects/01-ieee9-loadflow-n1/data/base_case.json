@@ -1,0 +1,38 @@
+{
+  "case": "pandapower.networks.case9",
+  "pandapower_version": "3.5.6",
+  "settings": {
+    "algorithm": "nr",
+    "max_iteration": 10,
+    "tolerance_mva": 1e-08,
+    "calculate_voltage_angles": true,
+    "numba": false
+  },
+  "network": {
+    "buses": 9,
+    "lines": 9,
+    "loads": 3,
+    "gens": 2,
+    "ext_grids": 1,
+    "slack_bus_labels": [
+      "1"
+    ]
+  },
+  "results": {
+    "converged": true,
+    "iterations": 3,
+    "buses_total": 9,
+    "lines_total": 9,
+    "buses_with_results": 9,
+    "lines_with_results": 9,
+    "vmin_pu": 0.9576210404662123,
+    "vmax_pu": 1.0033754364577536,
+    "vmin_bus": 8,
+    "vmax_bus": 5,
+    "max_line_loading_percent": 65.4560555563808,
+    "worst_line": 6,
+    "voltage_violations": 0,
+    "strict_voltage_violations": 0,
+    "line_overloads": 0
+  }
+}
