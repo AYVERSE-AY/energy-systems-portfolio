@@ -1,0 +1,4 @@
+storage_mode,storage_p_mw,storage_bus_index,storage_bus_name,converged,iterations,buses_with_results,lines_with_results,vmin_pu,vmax_pu,max_line_loading_percent,worst_line,voltage_violations,strict_voltage_violations,line_overloads
+standby,0.0,8,9,True,3,9,9,0.9576210404662123,1.0033754364577536,65.4560555563808,6,0,0,0
+charge_20mw,20.0,8,9,True,3,9,9,0.9544581262506683,1.003093563097742,65.50131004885364,6,0,0,0
+discharge_20mw,-20.0,8,9,True,3,9,9,0.9602826996558814,1.003559189318982,65.42192961872509,6,0,0,0
