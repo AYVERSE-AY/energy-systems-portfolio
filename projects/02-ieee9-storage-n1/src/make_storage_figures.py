@@ -1,4 +1,9 @@
-"""Create comparison figures for the IEEE 9-bus BESS study."""
+"""Create comparison figures for the IEEE 9-bus BESS study.
+
+Reads data/storage_base_results.csv and data/storage_n1_results.csv, writes to
+figures/. Bars whose N-1 result covers only part of the network (one bus
+islanded) are drawn hatched: their metrics describe the energised island only.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +15,13 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
-
+from matplotlib.patches import Patch
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "work"
-FIGURES = ROOT / "outputs" / "figures"
+DATA = ROOT / "data"
+FIGURES = ROOT / "figures"
+
+PARTIAL_STATUS = "partial_coverage_islanded"
 
 MODE_LABELS = {
     "standby": "Standby",
@@ -32,17 +39,22 @@ def style_axis(ax: plt.Axes, ylabel: str, title: str) -> None:
     ax.set_axisbelow(True)
 
 
+def partial_legend() -> Patch:
+    return Patch(facecolor="white", edgecolor="#333333", hatch="//",
+                 label="partial coverage (one bus islanded)")
+
+
 def main() -> None:
     FIGURES.mkdir(parents=True, exist_ok=True)
-    base = pd.read_csv(WORK / "storage_base_results.csv")
-    n1 = pd.read_csv(WORK / "storage_n1_results.csv")
+    base = pd.read_csv(DATA / "storage_base_results.csv")
+    n1 = pd.read_csv(DATA / "storage_n1_results.csv")
 
     base["mode_label"] = base["storage_mode"].map(MODE_LABELS)
     base = base.set_index("storage_mode").loc[MODE_ORDER].reset_index()
 
-    valid = n1[n1["status"] == "ok"]
+    full = n1[n1["status"] == "ok"]
     n1_summary = (
-        valid.groupby("storage_mode")
+        full.groupby("storage_mode")
         .agg(
             worst_vmin_pu=("vmin_pu", "min"),
             worst_loading_percent=("max_line_loading_percent", "max"),
@@ -74,18 +86,18 @@ def main() -> None:
     labels = [MODE_LABELS[mode] for mode in n1_summary["storage_mode"]]
     bars = ax.bar(labels, n1_summary["worst_vmin_pu"], color=COLORS)
     ax.axhline(0.90, color="#c0392b", linestyle="--", linewidth=1.2, label="0.90 p.u.")
-    ax.set_ylim(0.70, 0.88)
-    style_axis(ax, "Worst N-1 minimum voltage (p.u.)", "(c) N-1: worst minimum voltage")
-    ax.legend(loc="lower right")
+    ax.set_ylim(0.70, 0.91)
+    style_axis(ax, "Worst N-1 minimum voltage (p.u.)", "(c) N-1: worst minimum voltage (full coverage)")
+    ax.legend(loc="lower right", fontsize=8)
     for bar, value in zip(bars, n1_summary["worst_vmin_pu"]):
         ax.text(bar.get_x() + bar.get_width() / 2, value + 0.003, f"{value:.3f}", ha="center", fontsize=8)
 
     ax = axes[1, 1]
     bars = ax.bar(labels, n1_summary["worst_loading_percent"], color=COLORS)
     ax.axhline(100, color="#c0392b", linestyle="--", linewidth=1.2, label="100% limit")
-    ax.set_ylim(80, 112)
-    style_axis(ax, "Worst N-1 maximum loading (%)", "(d) N-1: worst line loading")
-    ax.legend(loc="lower right")
+    ax.set_ylim(80, 105)
+    style_axis(ax, "Worst N-1 maximum loading (%)", "(d) N-1: worst line loading (full coverage)")
+    ax.legend(loc="lower right", fontsize=8)
     for bar, value in zip(bars, n1_summary["worst_loading_percent"]):
         ax.text(bar.get_x() + bar.get_width() / 2, value + 0.8, f"{value:.1f}%", ha="center", fontsize=8)
 
@@ -94,17 +106,23 @@ def main() -> None:
     fig.savefig(FIGURES / "storage_modes_overview.png", dpi=200)
     plt.close(fig)
 
-    critical = valid[valid["outaged_line"].isin([6, 8])].copy()
-    line6 = critical[critical["outaged_line"] == 6].set_index("storage_mode").loc[MODE_ORDER]
-    line8 = critical[critical["outaged_line"] == 8].set_index("storage_mode").loc[MODE_ORDER]
+    line6 = n1[n1["outaged_line"] == 6].set_index("storage_mode").loc[MODE_ORDER]
+    line8 = n1[n1["outaged_line"] == 8].set_index("storage_mode").loc[MODE_ORDER]
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2))
     ax = axes[0]
-    bars = ax.bar([MODE_LABELS[m] for m in line6.index], line6["max_line_loading_percent"], color=COLORS)
+    hatches = ["//" if status == PARTIAL_STATUS else "" for status in line6["status"]]
+    bars = ax.bar(
+        [MODE_LABELS[m] for m in line6.index],
+        line6["max_line_loading_percent"],
+        color=COLORS,
+        hatch=hatches,
+        edgecolor="#333333",
+        linewidth=0.8,
+    )
     ax.axhline(100, color="#c0392b", linestyle="--", linewidth=1.2, label="100% limit")
     ax.set_ylim(80, 110)
-    style_axis(ax, "Maximum line loading (%)", "Outage of line 6 (8->2)")
-    ax.legend(loc="lower right")
+    style_axis(ax, "Maximum line loading (%)", "Outage of line 6 (b8->b2)")
     for bar, value in zip(bars, line6["max_line_loading_percent"]):
         ax.text(bar.get_x() + bar.get_width() / 2, value + 0.8, f"{value:.1f}%", ha="center", fontsize=9)
 
@@ -112,17 +130,29 @@ def main() -> None:
     bars = ax.bar([MODE_LABELS[m] for m in line8.index], line8["vmin_pu"], color=COLORS)
     ax.axhline(0.90, color="#c0392b", linestyle="--", linewidth=1.2, label="0.90 p.u.")
     ax.set_ylim(0.70, 0.88)
-    style_axis(ax, "Minimum voltage (p.u.)", "Outage of line 8 (9->4)")
-    ax.legend(loc="lower right")
+    style_axis(ax, "Minimum voltage (p.u.)", "Outage of line 8 (b9->b4)")
     for bar, value in zip(bars, line8["vmin_pu"]):
         ax.text(bar.get_x() + bar.get_width() / 2, value + 0.003, f"{value:.3f}", ha="center", fontsize=9)
 
-    fig.suptitle("Critical N-1 outages with BESS operating modes", fontsize=14)
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.legend(
+        handles=[
+            plt.Line2D([], [], color="#c0392b", linestyle="--", label="100% loading limit"),
+            plt.Line2D([], [], color="#c0392b", linestyle="--", label="0.90 p.u. voltage limit"),
+            partial_legend(),
+        ],
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        fontsize=9,
+        bbox_to_anchor=(0.5, 0.0),
+    )
+    fig.suptitle("Critical N-1 outages with BESS operating modes "
+                 "(hatched: metrics cover the energised island only)", fontsize=12)
+    fig.tight_layout(rect=[0, 0.06, 1, 0.93])
     fig.savefig(FIGURES / "storage_critical_outages.png", dpi=200)
     plt.close(fig)
 
-    print(f"Wrote storage figures to: {FIGURES}")
+    print(f"Wrote figures to: {FIGURES}")
 
 
 if __name__ == "__main__":

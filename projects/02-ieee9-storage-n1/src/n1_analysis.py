@@ -1,19 +1,18 @@
-"""IEEE 9-bus power flow and N-1 line outage screening.
+"""Power-flow metrics and N-1 validity checks shared by the BESS study.
 
-This script intentionally uses pandapower directly rather than the PowerMCP
-contingency tool. The installed PowerMCP version calls ``net.deepcopy()``,
-which pandapowerNet does not implement; ``copy.deepcopy`` is the correct
-operation.
+This module mirrors the metric and classification logic of
+`projects/01-ieee9-loadflow-n1/src/n1_analysis.py` (kept as a local copy so each
+project directory stays runnable on its own).
+
+Three concepts are reported separately: solver convergence (`converged`),
+result validity (`status`, derived from topology connectivity plus result
+coverage) and operating-limit compliance (`voltage_violations`,
+`strict_voltage_violations`, `line_overloads`).
 """
 
 from __future__ import annotations
 
-import copy
-from pathlib import Path
-
-import pandas as pd
 import pandapower as pp
-
 
 MAX_ITERATION = 10
 TOLERANCE_MVA = 1e-8
@@ -23,127 +22,142 @@ STRICT_V_MIN = 0.95
 STRICT_V_MAX = 1.05
 LOADING_LIMIT_PERCENT = 100.0
 
+STATUS_OK = "ok"
+STATUS_PARTIAL = "partial_coverage_islanded"
+STATUS_ISLANDED = "islanded_no_valid_results"
+STATUS_ERROR = "error"
+
+
+def connected_components(net: pp.pandapowerNet) -> list[list[int]]:
+    """Group buses connected by in-service branches (lines and transformers)."""
+    parent: dict[int, int] = {int(bus): int(bus) for bus in net.bus.index}
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_left] = root_right
+
+    for frame, pairs in (
+        (net.line, ("from_bus", "to_bus")),
+        (net.trafo, ("hv_bus", "lv_bus")),
+    ):
+        in_service = frame[frame.in_service] if not frame.empty else frame
+        for _, row in in_service.iterrows():
+            union(int(row[pairs[0]]), int(row[pairs[1]]))
+    for _, row in net.trafo3w[net.trafo3w.in_service].iterrows():
+        union(int(row.hv_bus), int(row.mv_bus))
+        union(int(row.hv_bus), int(row.lv_bus))
+
+    groups: dict[int, list[int]] = {}
+    for bus in net.bus.index:
+        groups.setdefault(find(int(bus)), []).append(int(bus))
+    return sorted(groups.values(), key=len, reverse=True)
+
+
+def slack_buses(net: pp.pandapowerNet) -> list[int]:
+    buses: list[int] = []
+    if not net.ext_grid.empty:
+        buses.extend(int(bus) for bus in net.ext_grid.bus)
+    return buses
+
+
+def islanded_buses(net: pp.pandapowerNet, components: list[list[int]]) -> list[int]:
+    """Buses in a topology partition that contains no slack source."""
+    sources = set(slack_buses(net))
+    islanded: list[int] = []
+    for group in components:
+        if not sources.intersection(group):
+            islanded.extend(group)
+    return sorted(islanded)
+
+
+def bus_label(net: pp.pandapowerNet, bus_index: int) -> str:
+    """Human-readable bus number (pandapower case9 names buses "1".."9")."""
+    name = net.bus.at[bus_index, "name"] if "name" in net.bus else None
+    return str(name) if name is not None and str(name) != "nan" else str(bus_index + 1)
+
 
 def run_power_flow(net: pp.pandapowerNet) -> dict[str, object]:
-    """Run one AC power flow and collect the metrics used in the report."""
-    pp.runpp(
-        net,
-        algorithm="nr",
-        calculate_voltage_angles=True,
-        max_iteration=MAX_ITERATION,
-        tolerance_mva=TOLERANCE_MVA,
-        numba=False,
-    )
+    """Run one AC power flow and classify the result."""
+    try:
+        pp.runpp(
+            net,
+            algorithm="nr",
+            calculate_voltage_angles=True,
+            max_iteration=MAX_ITERATION,
+            tolerance_mva=TOLERANCE_MVA,
+            numba=False,
+        )
+    except Exception as exc:  # non-convergence and islanding are expected cases
+        return {
+            "converged": False,
+            "iterations": None,
+            "buses_total": int(len(net.bus)),
+            "lines_total": int(len(net.line)),
+            "buses_with_results": 0,
+            "lines_with_results": 0,
+            "vmin_pu": None,
+            "vmax_pu": None,
+            "vmin_bus": None,
+            "vmax_bus": None,
+            "max_line_loading_percent": None,
+            "worst_line": None,
+            "voltage_violations": None,
+            "strict_voltage_violations": None,
+            "line_overloads": None,
+            "islanded_buses": [],
+            "status": STATUS_ERROR,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
     vm = net.res_bus.vm_pu.dropna()
     loading = net.res_line.loading_percent.dropna()
-    ppc = getattr(net, "_ppc", None)
-    valid_system = len(vm) >= 2 and not loading.empty
+    components = connected_components(net)
+    buses_solved = int(len(vm))
+    lines_solved = int(len(loading))
+
+    if buses_solved < 2 or lines_solved == 0:
+        status = STATUS_ISLANDED
+    elif len(components) > 1 or buses_solved < int(len(net.bus)):
+        status = STATUS_PARTIAL
+    else:
+        status = STATUS_OK
+
+    metrics_available = status != STATUS_ISLANDED
 
     return {
         "converged": bool(net.converged),
-        "iterations": ppc.get("iterations") if isinstance(ppc, dict) else None,
-        "buses_with_results": int(len(vm)),
-        "lines_with_results": int(len(loading)),
-        "vmin_pu": float(vm.min()) if valid_system else None,
-        "vmax_pu": float(vm.max()) if valid_system else None,
-        "max_line_loading_percent": float(loading.max()) if valid_system else None,
-        "worst_line": int(loading.idxmax()) if valid_system else None,
+        "iterations": net._ppc.get("iterations") if isinstance(net._ppc, dict) else None,
+        "buses_total": int(len(net.bus)),
+        "lines_total": int(len(net.line)),
+        "buses_with_results": buses_solved,
+        "lines_with_results": lines_solved,
+        "vmin_pu": float(vm.min()) if metrics_available and buses_solved else None,
+        "vmax_pu": float(vm.max()) if metrics_available and buses_solved else None,
+        "vmin_bus": int(vm.idxmin()) if metrics_available and buses_solved else None,
+        "vmax_bus": int(vm.idxmax()) if metrics_available and buses_solved else None,
+        "max_line_loading_percent": float(loading.max())
+        if metrics_available and lines_solved
+        else None,
+        "worst_line": int(loading.idxmax()) if metrics_available and lines_solved else None,
         "voltage_violations": int(((vm < V_MIN) | (vm > V_MAX)).sum())
-        if valid_system
+        if metrics_available and buses_solved
         else None,
         "strict_voltage_violations": int(
             ((vm < STRICT_V_MIN) | (vm > STRICT_V_MAX)).sum()
         )
-        if valid_system
+        if metrics_available and buses_solved
         else None,
         "line_overloads": int((loading > LOADING_LIMIT_PERCENT).sum())
-        if valid_system
+        if metrics_available and lines_solved
         else None,
+        "islanded_buses": islanded_buses(net, components),
+        "status": status,
+        "error": "",
     }
-
-
-def main() -> None:
-    base_net = pp.networks.case9()
-    base_result = run_power_flow(copy.deepcopy(base_net))
-
-    rows: list[dict[str, object]] = []
-    for line_index in base_net.line.index:
-        contingency_net = copy.deepcopy(base_net)
-        contingency_net.line.at[line_index, "in_service"] = False
-
-        row: dict[str, object] = {
-            "outaged_line": int(line_index),
-            "from_bus": int(base_net.line.at[line_index, "from_bus"]),
-            "to_bus": int(base_net.line.at[line_index, "to_bus"]),
-        }
-
-        try:
-            row.update(run_power_flow(contingency_net))
-            row["status"] = (
-                "ok"
-                if row["vmin_pu"] is not None
-                and row["max_line_loading_percent"] is not None
-                else "islanded_or_no_valid_results"
-            )
-            row["error"] = ""
-        except Exception as exc:  # non-convergence and islanding are expected cases
-            row.update(
-                {
-                    "converged": False,
-                    "iterations": None,
-                    "vmin_pu": None,
-                    "vmax_pu": None,
-                    "max_line_loading_percent": None,
-                    "worst_line": None,
-                    "voltage_violations": None,
-                    "strict_voltage_violations": None,
-                    "line_overloads": None,
-                    "status": "error",
-                    "error": str(exc),
-                }
-            )
-
-        rows.append(row)
-
-    results = pd.DataFrame(rows)
-    results["severity_score"] = (
-        (~results["converged"]).astype(int) * 1000
-        + (results["status"] != "ok").astype(int) * 500
-        + results["line_overloads"].fillna(0) * 100
-        + results["voltage_violations"].fillna(0) * 10
-        + results["max_line_loading_percent"].fillna(0)
-        - results["vmin_pu"].fillna(V_MAX)
-    )
-    results = results.sort_values("severity_score", ascending=False)
-
-    output_path = Path(__file__).with_name("n1_results.csv")
-    results.to_csv(output_path, index=False)
-
-    print("BASE CASE")
-    for key, value in base_result.items():
-        print(f"{key}: {value}")
-
-    print("\nTOP CONTINGENCIES")
-    columns = [
-        "outaged_line",
-        "from_bus",
-        "to_bus",
-        "status",
-        "converged",
-        "buses_with_results",
-        "lines_with_results",
-        "vmin_pu",
-        "vmax_pu",
-        "max_line_loading_percent",
-        "voltage_violations",
-        "strict_voltage_violations",
-        "line_overloads",
-        "error",
-    ]
-    print(results[columns].head(10).to_string(index=False))
-    print(f"\nCSV written to: {output_path}")
-
-
-if __name__ == "__main__":
-    main()

@@ -2,6 +2,15 @@
 
 The storage is placed at bus index 8 (bus name 9). Positive p_mw means
 charging (a load); negative p_mw means discharging (generation).
+
+Solver convergence, result validity (topology connectivity + result coverage)
+and operating-limit compliance are reported separately, mirroring the
+classification used in project 01.
+
+Outputs
+-------
+data/storage_base_results.csv   one row per operating mode (base case)
+data/storage_n1_results.csv     one row per operating mode and outaged line
 """
 
 from __future__ import annotations
@@ -12,8 +21,13 @@ from pathlib import Path
 import pandas as pd
 import pandapower as pp
 
-from n1_analysis import run_power_flow
-
+from n1_analysis import (
+    STATUS_ERROR,
+    STATUS_OK,
+    STATUS_PARTIAL,
+    bus_label,
+    run_power_flow,
+)
 
 STORAGE_BUS = 8
 STORAGE_P_MW = 20.0
@@ -23,6 +37,8 @@ MODES = {
     "charge_20mw": 20.0,
     "discharge_20mw": -20.0,
 }
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
 def make_network(mode_p_mw: float) -> tuple[pp.pandapowerNet, int]:
@@ -39,23 +55,8 @@ def make_network(mode_p_mw: float) -> tuple[pp.pandapowerNet, int]:
     return net, storage_index
 
 
-def empty_failure_row() -> dict[str, object]:
-    return {
-        "converged": False,
-        "iterations": None,
-        "buses_with_results": 0,
-        "lines_with_results": 0,
-        "vmin_pu": None,
-        "vmax_pu": None,
-        "max_line_loading_percent": None,
-        "worst_line": None,
-        "voltage_violations": None,
-        "strict_voltage_violations": None,
-        "line_overloads": None,
-    }
-
-
 def main() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
     base_rows: list[dict[str, object]] = []
 
@@ -81,28 +82,24 @@ def main() -> None:
                 "outaged_line": int(line_index),
                 "from_bus": int(base_net.line.at[line_index, "from_bus"]),
                 "to_bus": int(base_net.line.at[line_index, "to_bus"]),
+                "from_bus_label": bus_label(
+                    base_net, int(base_net.line.at[line_index, "from_bus"])
+                ),
+                "to_bus_label": bus_label(
+                    base_net, int(base_net.line.at[line_index, "to_bus"])
+                ),
             }
-            try:
-                row.update(run_power_flow(contingency_net))
-                row["status"] = (
-                    "ok"
-                    if row["vmin_pu"] is not None
-                    and row["max_line_loading_percent"] is not None
-                    else "islanded_or_no_valid_results"
-                )
-                row["error"] = ""
-            except Exception as exc:
-                row.update(empty_failure_row())
-                row["status"] = "error"
-                row["error"] = str(exc)
+            row.update(run_power_flow(contingency_net))
             rows.append(row)
 
-    results = pd.DataFrame(rows)
+    results = pd.DataFrame(rows).sort_values(["storage_mode", "outaged_line"], ignore_index=True)
     base = pd.DataFrame(base_rows)
+    results["islanded_buses"] = results["islanded_buses"].apply(
+        lambda buses: " ".join(str(bus) for bus in buses)
+    )
 
-    output_path = Path(__file__).with_name("storage_n1_results.csv")
-    results.to_csv(output_path, index=False)
-    base.to_csv(Path(__file__).with_name("storage_base_results.csv"), index=False)
+    results.to_csv(DATA_DIR / "storage_n1_results.csv", index=False)
+    base.to_csv(DATA_DIR / "storage_base_results.csv", index=False)
 
     print("STORAGE BASE CASES")
     print(
@@ -111,6 +108,7 @@ def main() -> None:
                 "storage_mode",
                 "storage_p_mw",
                 "converged",
+                "iterations",
                 "vmin_pu",
                 "vmax_pu",
                 "max_line_loading_percent",
@@ -121,10 +119,11 @@ def main() -> None:
         ].to_string(index=False)
     )
 
-    valid = results[results["status"] == "ok"]
+    valid = results[results["status"] == STATUS_OK]
     summary = (
         valid.groupby("storage_mode")
         .agg(
+            ok_cases=("outaged_line", "size"),
             worst_vmin_pu=("vmin_pu", "min"),
             worst_loading_percent=("max_line_loading_percent", "max"),
             voltage_violation_cases=("voltage_violations", lambda s: int((s > 0).sum())),
@@ -134,35 +133,59 @@ def main() -> None:
             ),
             overload_cases=("line_overloads", lambda s: int((s > 0).sum())),
         )
+        .reindex(list(MODES))
         .reset_index()
     )
-    invalid_counts = (
-        results[results["status"] != "ok"]
-        .groupby("storage_mode")
-        .size()
-        .rename("invalid_or_islanded_cases")
-        .reset_index()
-    )
-    summary = summary.merge(invalid_counts, on="storage_mode", how="left")
-    summary["invalid_or_islanded_cases"] = summary[
-        "invalid_or_islanded_cases"
+    for status, column in (
+        (STATUS_PARTIAL, "partial_cases"),
+        ("islanded_no_valid_results", "invalid_cases"),
+        (STATUS_ERROR, "error_cases"),
+    ):
+        counts = (
+            results[results["status"] == status]
+            .groupby("storage_mode")
+            .size()
+            .reindex(list(MODES))
+            .fillna(0)
+            .astype(int)
+            .reset_index(name=column)
+        )
+        summary = summary.merge(counts, on="storage_mode", how="left")
+    summary[["partial_cases", "invalid_cases", "error_cases"]] = summary[
+        ["partial_cases", "invalid_cases", "error_cases"]
     ].fillna(0)
 
-    print("\nN-1 SUMMARY BY STORAGE MODE")
+    print("\nN-1 SUMMARY BY STORAGE MODE (metrics over full-coverage cases only)")
     print(summary.to_string(index=False))
 
-    critical = results[
-        (results["outaged_line"].isin([6, 7, 8]))
-        & (results["status"] == "ok")
-    ]
+    partial = results[results["status"] == STATUS_PARTIAL]
+    print("\nPARTIAL-COVERAGE CASES (one bus islanded; metrics cover the energised island only)")
+    print(
+        partial[
+            [
+                "storage_mode",
+                "outaged_line",
+                "from_bus_label",
+                "to_bus_label",
+                "islanded_buses",
+                "vmin_pu",
+                "max_line_loading_percent",
+                "strict_voltage_violations",
+                "line_overloads",
+            ]
+        ].to_string(index=False)
+    )
+
+    critical = results[results["outaged_line"].isin([6, 7, 8])]
     print("\nCRITICAL OUTAGES: LINES 6, 7, 8")
     print(
         critical[
             [
                 "storage_mode",
                 "outaged_line",
-                "from_bus",
-                "to_bus",
+                "from_bus_label",
+                "to_bus_label",
+                "status",
                 "vmin_pu",
                 "max_line_loading_percent",
                 "voltage_violations",
@@ -171,7 +194,9 @@ def main() -> None:
             ]
         ].to_string(index=False)
     )
-    print(f"\nCSV written to: {output_path}")
+
+    print(f"\nCSV written to: {DATA_DIR / 'storage_n1_results.csv'}")
+    print(f"Base case written to: {DATA_DIR / 'storage_base_results.csv'}")
 
 
 if __name__ == "__main__":
