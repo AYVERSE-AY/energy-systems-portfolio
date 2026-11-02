@@ -14,3 +14,15 @@ Thumbs.db
 # pandapower 运行临时文件
 *.p
 *.json.bak
+
+# pytest / 本地工具缓存
+.pytest_cache/
+.pytest_tmp/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# 项目 03 本地临时目录与运行产物
+projects/03-bess-dispatch-analytics/.tmp/
+projects/03-bess-dispatch-analytics/results/*
+!projects/03-bess-dispatch-analytics/results/.gitkeep
