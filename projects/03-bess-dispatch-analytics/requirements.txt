@@ -1,0 +1,9 @@
+# 项目 03 直接依赖（实际安装版本，Python 3.13）
+# 安装：python -m pip install -r requirements.txt
+# 注意：本机请始终用 python -m pip，不要直接调用全局 pip.exe
+pytest==9.1.1
+numpy==2.5.4
+pandas==3.1.0
+matplotlib==3.11.2
+# 阶段 2 新增：HiGHS 官方 Python 绑定（MILP 经济调度求解器）
+highspy==1.15.1
