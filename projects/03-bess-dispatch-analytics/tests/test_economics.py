@@ -7,8 +7,11 @@ import pytest
 from economics import (
     EconomicsInputError,
     annualize,
+    breakeven_unit_capex,
     capex_for,
     evaluate_baseline_case,
+    payback_for_saving,
+    report,
 )
 from scenario import PARAMS
 
@@ -64,3 +67,34 @@ def test_baseline_case_numbers():
     assert result.capex_yuan == pytest.approx(126_000.0)
     assert result.payback_years == pytest.approx(20.12, abs=0.01)
     assert result.annual_profit_ratio == pytest.approx(0.0497, abs=0.001)
+
+
+# 反算：达到目标回收期所需的元/kWh 单价 ------------------------------
+def test_breakeven_unit_capex_matches_hand_calculation():
+    expected_10 = (6263.619 * 10 - 6000.0) / 100.0
+    assert breakeven_unit_capex(17.1606, 10.0) == pytest.approx(expected_10, abs=0.5)
+
+    expected_15 = (6263.619 * 15 - 6000.0) / 100.0
+    assert breakeven_unit_capex(17.1606, 15.0) == pytest.approx(expected_15, abs=0.5)
+
+
+def test_breakeven_with_demand_saving_is_higher():
+    base_10 = breakeven_unit_capex(17.1606, 10.0)
+    demand_10 = breakeven_unit_capex(22.78, 10.0)
+    assert demand_10 > base_10
+    assert demand_10 == pytest.approx((22.78 * 365 * 10 - 6000.0) / 100.0, abs=0.5)
+
+
+def test_breakeven_returns_none_when_unreachable():
+    assert breakeven_unit_capex(0.0, 10.0) is None
+    assert breakeven_unit_capex(-1.0, 10.0) is None
+    assert breakeven_unit_capex(17.1606, 0.0) is None
+    assert breakeven_unit_capex(1.0, 1.0, capex_per_kw=10_000.0) is None
+
+
+def test_demand_scenario_payback_and_report():
+    summary = report()
+    assert summary["demand_payback_years"] == pytest.approx(15.15, abs=0.02)
+    assert summary["breakeven_capex_10y"] == pytest.approx(566.4, abs=1.0)
+    assert summary["breakeven_capex_demand_10y"] == pytest.approx(771.5, abs=1.0)
+    assert payback_for_saving(0.0, 126_000.0) is None

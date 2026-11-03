@@ -75,6 +75,55 @@ def evaluate_baseline_case() -> EconomicsResult:
     return annualize(17.1606, capex_for(PARAMS))
 
 
+def breakeven_unit_capex(
+    daily_saving_yuan: float,
+    target_years: float,
+    params=None,
+    capex_per_kw: float = CAPEX_PER_KW,
+) -> float | None:
+    """元/kWh unit price that just reaches ``target_years`` payback.
+
+    The per-kW cost is held fixed; the remaining budget is divided by capacity.
+    Returns ``None`` when the annual saving is non-positive, the target is
+    non-positive, or the per-kW cost alone exceeds the affordable capex
+    (i.e. even free cells cannot hit the target).
+    """
+    if params is None:
+        from scenario import PARAMS as params  # local import keeps module importable alone
+
+    if daily_saving_yuan <= 0 or target_years <= 0:
+        return None
+
+    annual = daily_saving_yuan * DAYS_PER_YEAR
+    affordable_capex = annual * target_years
+    power_kw = max(params.p_charge_max_kw, params.p_discharge_max_kw)
+    residual = affordable_capex - power_kw * capex_per_kw
+    if residual <= 0 or params.e_max_kwh <= 0:
+        return None
+    return residual / params.e_max_kwh
+
+
+def payback_for_saving(daily_saving_yuan: float, capex_yuan: float) -> float | None:
+    """Static payback in years, or ``None`` when the saving is non-positive."""
+    return annualize(daily_saving_yuan, capex_yuan).payback_years
+
+
+def report() -> dict[str, float | None]:
+    """Summary used by the report and the console output."""
+    base = evaluate_baseline_case()
+    demand = annualize(22.78, base.capex_yuan)
+    return {
+        "daily_saving": base.daily_saving_yuan,
+        "annual_saving": base.annual_saving_yuan,
+        "capex": base.capex_yuan,
+        "payback_years": base.payback_years,
+        "demand_payback_years": demand.payback_years,
+        "breakeven_capex_10y": breakeven_unit_capex(base.daily_saving_yuan, 10.0),
+        "breakeven_capex_15y": breakeven_unit_capex(base.daily_saving_yuan, 15.0),
+        "breakeven_capex_demand_10y": breakeven_unit_capex(22.78, 10.0),
+    }
+
+
 def main() -> None:
     result = evaluate_baseline_case()
     print(f"日节省        = {result.daily_saving_yuan:.2f} 元")
@@ -86,7 +135,18 @@ def main() -> None:
     else:
         print(f"静态回收期    = {result.payback_years:.2f} 年")
     print(f"年收益/投资    = {result.annual_profit_ratio * 100:.2f} %")
-    print("\n示意假设：单日工况重复 365 天、无衰减、不谈贴现。")
+
+    summary = report()
+    print("\n反算：达到目标回收期所需的电池单价（元/kWh，功率成本固定 300 元/kW）")
+    for target, key in ((10.0, "breakeven_capex_10y"), (15.0, "breakeven_capex_15y")):
+        value = summary[key]
+        print(f"  仅峰谷套利、{target:.0f} 年回收 → "
+              + ("不可达" if value is None else f"{value:.1f} 元/kWh"))
+    value = summary["breakeven_capex_demand_10y"]
+    print("  叠加需量电费(1 元/kW·日)、10 年回收 → "
+          + ("不可达" if value is None else f"{value:.1f} 元/kWh"))
+    print(f"  叠加需量电费后的回收期 = {summary['demand_payback_years']:.2f} 年")
+    print("\n示意假设：单日工况重复 365 天、无衰减、不谈贴现、无运维与补贴。")
 
 
 if __name__ == "__main__":
